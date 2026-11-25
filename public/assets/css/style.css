@@ -1,0 +1,81 @@
+body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Vazirmatn", sans-serif;
+}
+
+.dir-ltr {
+    direction: ltr;
+    text-align: left;
+}
+
+.message-card {
+    max-width: 920px;
+    border-radius: 12px;
+}
+
+.message-user {
+    background-color: #e7f1ff;
+    border: 1px solid #cfe2ff;
+}
+
+.message-assistant {
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+}
+
+/* بلوک‌های کد همیشه چپ‌به‌راست */
+.message-assistant pre,
+.message-assistant code,
+.message-user pre,
+.message-user code,
+.code-block-wrapper {
+    direction: ltr !important;
+    text-align: left !important;
+    unicode-bidi: isolate;
+}
+
+.code-block-wrapper {
+    position: relative;
+    margin: 0.75rem 0;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #30363d;
+    background: #0d1117;
+}
+
+.code-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #161b22;
+    color: #c9d1d9;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.78rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.code-block-wrapper pre {
+    margin: 0 !important;
+    padding: 0.85rem !important;
+    overflow-x: auto;
+    background: transparent !important;
+}
+
+.sidebar-item.active {
+    background-color: rgba(13, 202, 240, 0.18);
+    border-right: 3px solid #0dcaf0;
+}
+
+@media (max-width: 991.98px) {
+    #sidebar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1045;
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+    }
+    #sidebar.show {
+        transform: translateX(0);
+    }
+}
