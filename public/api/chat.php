@@ -1,6 +1,9 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/auth.php';
+requireApiAuth();
+
 @ini_set('output_buffering', 'Off');
 @ini_set('zlib.output_compression', 'Off');
 @ini_set('implicit_flush', '1');
@@ -60,12 +63,40 @@ if (!is_array($contents) || count($contents) === 0) {
 
 $temperature = isset($input['temperature']) ? max(0.0, min(2.0, (float)$input['temperature'])) : 0.4;
 $systemInstructionText = trim((string)($input['systemInstruction'] ?? ''));
+$thinkingLevel = trim((string)($input['thinkingLevel'] ?? ''));
+
+$generationConfig = [
+    'temperature' => $temperature,
+];
+
+$allowedLevels = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+if ($thinkingLevel !== '' && in_array(strtolower($thinkingLevel), $allowedLevels, true)) {
+    $levelUpper = strtoupper($thinkingLevel);
+    if (str_starts_with($model, 'gemini-2.5')) {
+        $budgetMap = [
+            'MINIMAL' => 0,
+            'LOW' => 1024,
+            'MEDIUM' => 4096,
+            'HIGH' => 16384,
+            'XHIGH' => 24576,
+        ];
+        $budget = $budgetMap[$levelUpper] ?? -1;
+        if ($model === 'gemini-2.5-pro' && $budget === 0) {
+            $budget = 128;
+        }
+        $generationConfig['thinkingConfig'] = [
+            'thinkingBudget' => $budget,
+        ];
+    } else {
+        $generationConfig['thinkingConfig'] = [
+            'thinkingLevel' => $levelUpper,
+        ];
+    }
+}
 
 $payload = [
     'contents' => $contents,
-    'generationConfig' => [
-        'temperature' => $temperature,
-    ],
+    'generationConfig' => $generationConfig,
 ];
 
 if ($systemInstructionText !== '') {
@@ -92,6 +123,10 @@ curl_setopt_array($ch, [
         'x-goog-api-key: ' . $apiKey,
     ],
     CURLOPT_WRITEFUNCTION => function ($ch, string $chunk) use (&$buffer, &$httpErrorText): int {
+        if (connection_aborted()) {
+            return 0;
+        }
+
         $buffer .= $chunk;
         $lines = explode("\n", $buffer);
         $buffer = array_pop($lines);
@@ -123,6 +158,10 @@ curl_setopt_array($ch, [
                     sendSse('chunk', ['text' => (string)$part['text']]);
                 }
             }
+
+            if (isset($data['usageMetadata']) && is_array($data['usageMetadata'])) {
+                sendSse('usage', $data['usageMetadata']);
+            }
         }
 
         return strlen($chunk);
@@ -134,7 +173,7 @@ $curlErr = curl_error($ch);
 $statusCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
-if ($curlErr !== '') {
+if ($curlErr !== '' && !connection_aborted()) {
     sendSse('error', ['message' => 'خطای شبکه در اتصال به Gemini: ' . $curlErr]);
     exit;
 }

@@ -1,6 +1,9 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/auth.php';
+requireApiAuth();
+
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
 
@@ -69,8 +72,8 @@ foreach ($decoded['models'] ?? [] as $item) {
         'id' => $modelId,
         'displayName' => (string)($item['displayName'] ?? $modelId),
         'description' => (string)($item['description'] ?? ''),
-        'inputTokenLimit' => (int)($item['inputTokenLimit'] ?? 0),
-        'outputTokenLimit' => (int)($item['outputTokenLimit'] ?? 0),
+        'inputTokenLimit' => (int)($item['inputTokenLimit'] ?? 1048576),
+        'outputTokenLimit' => (int)($item['outputTokenLimit'] ?? 65536),
     ];
 }
 

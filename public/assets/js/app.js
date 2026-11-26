@@ -2,17 +2,33 @@
     const STORAGE_KEY_PERSIST = 'gemini_enc_key_local';
     const STORAGE_KEY_SESSION = 'gemini_enc_key_session';
     const STORAGE_MODELS_CACHE = 'gemini_models_cache_v1';
+    const STORAGE_MODEL_THINKING_DEFAULTS = 'gemini_model_thinking_defaults_v1';
+    const STORAGE_CUSTOM_SNIPPETS = 'gemini_custom_snippets_v1';
     const SECRET_SALT = 'GeminiCodeClient::LocalObfuscation::v1';
+
+    const BUILTIN_SNIPPETS = {
+        debug: 'این کد با خطا مواجه می‌شود. علت دقیق باگ را پیدا کن، توضیح بده و نسخه اصلاح‌شده کامل را ارائه بده:\n',
+        refactor: 'کد زیر را از نظر خوانایی، عملکرد، رعایت استانداردهای مدرن و جداسازی مسئولیت‌ها بازنویسی و بهینه‌سازی کن:\n',
+        security: 'این کد را از نظر آسیب‌پذیری‌های امنیتی (مانند SQL Injection، XSS، CSRF، احراز هویت و اعتبارسنجی ورودی) بررسی کن و نسخه ایمن را بنویس:\n',
+        explain: 'منطق و عملکرد این کد را به صورت گام‌به‌گام و شفاف توضیح بده:\n',
+        zipformat: 'تمام فایل‌های کد را به صورت کامل بنویس و در خط اول هر بلوک کد حتماً مسیر دقیق فایل را با فرمت `// file: path/to/filename.ext` مشخص کن تا بتوانم آن‌ها را یکجا به صورت ZIP دانلود کنم.\n'
+    };
 
     let state = {
         apiKey: '',
+        models: [],
+        modelThinkingDefaults: {},
+        customSnippets: [],
         projects: [],
         chats: [],
         activeProjectId: null,
         activeChatId: null,
         attachedFiles: [],
         draftProjectFiles: [],
-        isStreaming: false
+        editingProjectFileId: null,
+        isStreaming: false,
+        abortController: null,
+        lastActualPromptTokens: null
     };
 
     const dom = {
@@ -22,16 +38,30 @@
         newProjectBtn: document.getElementById('newProjectBtn'),
         newChatBtn: document.getElementById('newChatBtn'),
         activeContextBadge: document.getElementById('activeContextBadge'),
+        tokenBadge: document.getElementById('tokenBadge'),
+        tokenCountText: document.getElementById('tokenCountText'),
+        contextWarningBanner: document.getElementById('contextWarningBanner'),
+        contextWarningText: document.getElementById('contextWarningText'),
+        togglePinnedDrawerBtn: document.getElementById('togglePinnedDrawerBtn'),
+        pinnedCountBadge: document.getElementById('pinnedCountBadge'),
+        pinnedMessagesPanel: document.getElementById('pinnedMessagesPanel'),
+        pinnedMessagesList: document.getElementById('pinnedMessagesList'),
+        closePinnedPanelBtn: document.getElementById('closePinnedPanelBtn'),
         modelSelect: document.getElementById('modelSelect'),
         refreshModelsBtn: document.getElementById('refreshModelsBtn'),
+        thinkingLevelSelect: document.getElementById('thinkingLevelSelect'),
+        saveModelThinkingBtn: document.getElementById('saveModelThinkingBtn'),
         tempRange: document.getElementById('tempRange'),
         tempValue: document.getElementById('tempValue'),
         chatMessages: document.getElementById('chatMessages'),
         attachedFilesBar: document.getElementById('attachedFilesBar'),
         chatTextFileInput: document.getElementById('chatTextFileInput'),
+        promptSnippetsBar: document.getElementById('promptSnippetsBar'),
+        manageSnippetsBtn: document.getElementById('manageSnippetsBtn'),
         chatForm: document.getElementById('chatForm'),
         promptInput: document.getElementById('promptInput'),
         sendBtn: document.getElementById('sendBtn'),
+        stopBtn: document.getElementById('stopBtn'),
         apiKeyInput: document.getElementById('apiKeyInput'),
         rememberKeyCheck: document.getElementById('rememberKeyCheck'),
         saveApiKeyBtn: document.getElementById('saveApiKeyBtn'),
@@ -39,17 +69,31 @@
         projectModalTitle: document.getElementById('projectModalTitle'),
         projectIdInput: document.getElementById('projectIdInput'),
         projectNameInput: document.getElementById('projectNameInput'),
+        projectDefaultModelSelect: document.getElementById('projectDefaultModelSelect'),
+        projectDefaultThinkingSelect: document.getElementById('projectDefaultThinkingSelect'),
+        projectDefaultTempInput: document.getElementById('projectDefaultTempInput'),
         projectInstructionsInput: document.getElementById('projectInstructionsInput'),
         projectFilesInput: document.getElementById('projectFilesInput'),
+        createEmptyProjectFileBtn: document.getElementById('createEmptyProjectFileBtn'),
         projectFilesList: document.getElementById('projectFilesList'),
+        projectFileEditorPane: document.getElementById('projectFileEditorPane'),
+        projectFileEditorPlaceholder: document.getElementById('projectFileEditorPlaceholder'),
+        editingProjectFileName: document.getElementById('editingProjectFileName'),
+        editingProjectFileContent: document.getElementById('editingProjectFileContent'),
+        applyProjectFileEditBtn: document.getElementById('applyProjectFileEditBtn'),
         saveProjectBtn: document.getElementById('saveProjectBtn'),
         exportDataBtn: document.getElementById('exportDataBtn'),
         importDataInput: document.getElementById('importDataInput'),
+        newSnippetTitle: document.getElementById('newSnippetTitle'),
+        newSnippetPrompt: document.getElementById('newSnippetPrompt'),
+        saveCustomSnippetBtn: document.getElementById('saveCustomSnippetBtn')
     };
 
     const apiKeyModal = new bootstrap.Modal(document.getElementById('apiKeyModal'));
     const projectModal = new bootstrap.Modal(document.getElementById('projectModal'));
+    const customSnippetModal = new bootstrap.Modal(document.getElementById('customSnippetModal'));
 
+    // --- رمزنگاری محلی کلید API ---
     function obfuscateKey(plain) {
         const bytes = new TextEncoder().encode(plain);
         const mask = new TextEncoder().encode(SECRET_SALT);
@@ -96,10 +140,58 @@
         }
     }
 
+    // --- بارگذاری تنظیمات ذخیره‌شده سطوح تفکر و قالب‌های پرامپت ---
+    function loadPreferences() {
+        try {
+            state.modelThinkingDefaults = JSON.parse(localStorage.getItem(STORAGE_MODEL_THINKING_DEFAULTS) || '{}');
+        } catch {
+            state.modelThinkingDefaults = {};
+        }
+        try {
+            state.customSnippets = JSON.parse(localStorage.getItem(STORAGE_CUSTOM_SNIPPETS) || '[]');
+        } catch {
+            state.customSnippets = [];
+        }
+        renderCustomSnippets();
+    }
+
+    function saveModelThinkingDefaults() {
+        localStorage.setItem(STORAGE_MODEL_THINKING_DEFAULTS, JSON.stringify(state.modelThinkingDefaults));
+    }
+
+    function renderCustomSnippets() {
+        dom.promptSnippetsBar.querySelectorAll('.custom-snippet-btn').forEach(el => el.remove());
+        state.customSnippets.forEach((snip, index) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm btn-outline-primary py-0 px-2 text-nowrap custom-snippet-btn';
+            btn.textContent = snip.title;
+            btn.title = 'کلیک برای درج در پیام (راست‌کلیک برای حذف)';
+            btn.addEventListener('click', () => insertSnippetIntoPrompt(snip.prompt));
+            btn.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                if (confirm(`قالب "${snip.title}" حذف شود؟`)) {
+                    state.customSnippets.splice(index, 1);
+                    localStorage.setItem(STORAGE_CUSTOM_SNIPPETS, JSON.stringify(state.customSnippets));
+                    renderCustomSnippets();
+                }
+            });
+            dom.promptSnippetsBar.insertBefore(btn, dom.manageSnippetsBtn);
+        });
+    }
+
+    function insertSnippetIntoPrompt(text) {
+        const current = dom.promptInput.value;
+        dom.promptInput.value = current ? `${text}\n${current}` : text;
+        dom.promptInput.focus();
+        updateTokenEstimate();
+    }
+
+    // --- خواندن فایل متنی ---
     function readTextFile(file) {
         return new Promise((resolve, reject) => {
-            if (file.size > 2 * 1024 * 1024) {
-                reject(new Error(`حجم فایل "${file.name}" بیشتر از ۲ مگابایت است.`));
+            if (file.size > 3 * 1024 * 1024) {
+                reject(new Error(`حجم فایل "${file.name}" بیشتر از ۳ مگابایت است.`));
                 return;
             }
             const reader = new FileReader();
@@ -114,6 +206,7 @@
         });
     }
 
+    // --- دریافت لیست مدل‌ها از سرور ---
     async function fetchModelsFromServer(forceRefresh = false) {
         if (!forceRefresh) {
             const cached = localStorage.getItem(STORAGE_MODELS_CACHE);
@@ -121,7 +214,8 @@
                 try {
                     const parsed = JSON.parse(cached);
                     if (Array.isArray(parsed.models) && parsed.models.length > 0) {
-                        populateModelSelect(parsed.models);
+                        state.models = parsed.models;
+                        populateModelSelects(parsed.models);
                         return;
                     }
                 } catch {}
@@ -139,12 +233,12 @@
             if (!res.ok || data.error) {
                 throw new Error(data.error || 'خطا در دریافت مدل‌ها');
             }
-            const models = data.models || [];
+            state.models = data.models || [];
             localStorage.setItem(STORAGE_MODELS_CACHE, JSON.stringify({
                 updatedAt: Date.now(),
-                models
+                models: state.models
             }));
-            populateModelSelect(models);
+            populateModelSelects(state.models);
         } catch (err) {
             alert(err.message);
         } finally {
@@ -152,9 +246,12 @@
         }
     }
 
-    function populateModelSelect(models) {
-        const previous = dom.modelSelect.value;
+    function populateModelSelects(models) {
+        const previousMain = dom.modelSelect.value;
+        const previousProj = dom.projectDefaultModelSelect.value;
+
         dom.modelSelect.innerHTML = '';
+        dom.projectDefaultModelSelect.innerHTML = '<option value="">استفاده از مدل فعال فعلی</option>';
 
         if (!models.length) {
             dom.modelSelect.innerHTML = '<option value="">مدلی یافت نشد</option>';
@@ -162,26 +259,87 @@
         }
 
         for (const m of models) {
-            const opt = document.createElement('option');
-            opt.value = m.id;
-            opt.textContent = m.displayName ? `${m.displayName} (${m.id})` : m.id;
-            dom.modelSelect.appendChild(opt);
+            const label = m.displayName ? `${m.displayName} (${m.id})` : m.id;
+
+            const opt1 = document.createElement('option');
+            opt1.value = m.id;
+            opt1.textContent = label;
+            dom.modelSelect.appendChild(opt1);
+
+            const opt2 = document.createElement('option');
+            opt2.value = m.id;
+            opt2.textContent = label;
+            dom.projectDefaultModelSelect.appendChild(opt2);
         }
 
-        if (previous && models.some(m => m.id === previous)) {
-            dom.modelSelect.value = previous;
+        if (previousMain && models.some(m => m.id === previousMain)) {
+            dom.modelSelect.value = previousMain;
         } else {
             const preferred = models.find(m => m.id.includes('2.5-pro')) || models.find(m => m.id.includes('2.5-flash')) || models[0];
             if (preferred) dom.modelSelect.value = preferred.id;
         }
+
+        if (previousProj && models.some(m => m.id === previousProj)) {
+            dom.projectDefaultModelSelect.value = previousProj;
+        }
+
+        syncThinkingAndModelUI();
+        updateTokenEstimate();
     }
 
-    function renderMarkdownSafe(mdText) {
+    // --- استخراج نام فایل از بلوک کد و دانلود ZIP ---
+    function detectCodeFilename(codeText, langName, fallbackIndex) {
+        const lines = codeText.split('\n');
+        const firstLine = (lines[0] || '').trim();
+        const fileMatch = firstLine.match(/^(?:\/\/|#|\/\*|<!--)\s*(?:file|filename|path)\s*:\s*([^\s*]+(?:\/[^\s*]+)*)/i);
+        if (fileMatch && fileMatch[1]) {
+            return fileMatch[1].replace(/(-->|\*\/)$/, '').trim();
+        }
+        const extMap = {
+            php: 'php', javascript: 'js', js: 'js', typescript: 'ts', ts: 'ts',
+            css: 'css', html: 'html', json: 'json', python: 'py', py: 'py',
+            sql: 'sql', bash: 'sh', shell: 'sh', yaml: 'yml', yml: 'yml', markdown: 'md', md: 'md'
+        };
+        const ext = extMap[(langName || '').toLowerCase()] || 'txt';
+        return `snippet-${fallbackIndex}.${ext}`;
+    }
+
+    async function downloadFilesAsZip(filesList, zipName = 'gemini-code-bundle.zip') {
+        if (!window.JSZip) {
+            alert('کتابخانه JSZip بارگذاری نشده است.');
+            return;
+        }
+        const zip = new JSZip();
+        const usedNames = new Set();
+
+        filesList.forEach((item, idx) => {
+            let name = (item.filename || `file-${idx + 1}.txt`).replace(/^\/+/, '');
+            if (usedNames.has(name)) {
+                const dot = name.lastIndexOf('.');
+                name = dot > 0 ? `${name.slice(0, dot)}-${idx + 1}${name.slice(dot)}` : `${name}-${idx + 1}`;
+            }
+            usedNames.add(name);
+            zip.file(name, item.content);
+        });
+
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = zipName;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    // --- رندر Markdown با بلوک کد LTR، دکمه کپی و دانلود ZIP ---
+    function renderMarkdownWithTools(mdText) {
         const rawHtml = marked.parse(mdText || '');
         const container = document.createElement('div');
         container.innerHTML = rawHtml;
 
-        container.querySelectorAll('pre').forEach((pre) => {
+        const extractedFiles = [];
+
+        container.querySelectorAll('pre').forEach((pre, index) => {
             const codeEl = pre.querySelector('code');
             const langClass = codeEl ? [...codeEl.classList].find(c => c.startsWith('language-')) : '';
             const langName = langClass ? langClass.replace('language-', '') : 'code';
@@ -190,45 +348,160 @@
                 window.hljs.highlightElement(codeEl);
             }
 
+            const rawCode = codeEl ? codeEl.innerText : pre.innerText;
+            const detectedFilename = detectCodeFilename(rawCode, langName, index + 1);
+            extractedFiles.push({ filename: detectedFilename, content: rawCode });
+
             const wrapper = document.createElement('div');
             wrapper.className = 'code-block-wrapper';
 
             const header = document.createElement('div');
             header.className = 'code-block-header';
 
-            const langSpan = document.createElement('span');
-            langSpan.textContent = langName;
+            const leftInfo = document.createElement('span');
+            leftInfo.textContent = `${langName} • ${detectedFilename}`;
+
+            const btnGroup = document.createElement('div');
+            btnGroup.className = 'd-flex gap-1';
+
+            const zipSingleBtn = document.createElement('button');
+            zipSingleBtn.type = 'button';
+            zipSingleBtn.className = 'btn btn-sm btn-dark py-0 px-2 border border-secondary';
+            zipSingleBtn.title = 'دانلود این فایل در قالب ZIP';
+            zipSingleBtn.innerHTML = '<i class="bi bi-file-earmark-zip"></i> ZIP';
+            zipSingleBtn.dataset.zipSingle = JSON.stringify({ filename: detectedFilename, content: rawCode });
 
             const copyBtn = document.createElement('button');
             copyBtn.type = 'button';
             copyBtn.className = 'btn btn-sm btn-dark py-0 px-2 border border-secondary';
             copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> کپی';
-            copyBtn.addEventListener('click', async () => {
-                const textToCopy = codeEl ? codeEl.innerText : pre.innerText;
-                await navigator.clipboard.writeText(textToCopy);
-                copyBtn.innerHTML = '<i class="bi bi-check2 text-success"></i> کپی شد';
-                setTimeout(() => {
-                    copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> کپی';
-                }, 1500);
-            });
+            copyBtn.dataset.copyCode = rawCode;
 
-            header.appendChild(langSpan);
-            header.appendChild(copyBtn);
+            btnGroup.appendChild(zipSingleBtn);
+            btnGroup.appendChild(copyBtn);
+            header.appendChild(leftInfo);
+            header.appendChild(btnGroup);
 
             pre.parentNode.insertBefore(wrapper, pre);
             wrapper.appendChild(header);
             wrapper.appendChild(pre);
         });
 
-        return container.innerHTML;
+        return { html: container.innerHTML, extractedFiles };
     }
 
+    function bindCodeBlockButtons(rootEl) {
+        rootEl.querySelectorAll('[data-copy-code]').forEach(btn => {
+            btn.onclick = async () => {
+                await navigator.clipboard.writeText(btn.dataset.copyCode || '');
+                btn.innerHTML = '<i class="bi bi-check2 text-success"></i> کپی شد';
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="bi bi-clipboard"></i> کپی';
+                }, 1500);
+            };
+        });
+
+        rootEl.querySelectorAll('[data-zip-single]').forEach(btn => {
+            btn.onclick = async () => {
+                const item = JSON.parse(btn.dataset.zipSingle);
+                const baseZip = item.filename.split('/').pop().replace(/\.[^.]+$/, '') || 'code';
+                await downloadFilesAsZip([item], `${baseZip}.zip`);
+            };
+        });
+    }
+
+    // --- دسترسی به پروژه و چت فعال ---
     function getActiveProject() {
         return state.projects.find(p => p.id === state.activeProjectId) || null;
     }
 
     function getActiveChat() {
         return state.chats.find(c => c.id === state.activeChatId) || null;
+    }
+
+    // --- همگام‌سازی پروفایل تنظیمات پروژه، سطح تفکر چت و پیش‌فرض مدل ---
+    function applyProjectProfileToUI(project) {
+        if (!project) return;
+        if (project.defaultModel && state.models.some(m => m.id === project.defaultModel)) {
+            dom.modelSelect.value = project.defaultModel;
+        }
+        if (project.defaultTemp !== undefined && project.defaultTemp !== '' && !Number.isNaN(Number(project.defaultTemp))) {
+            dom.tempRange.value = String(project.defaultTemp);
+            dom.tempValue.textContent = String(project.defaultTemp);
+        }
+        if (project.defaultThinking !== undefined) {
+            dom.thinkingLevelSelect.value = project.defaultThinking;
+        }
+    }
+
+    function syncThinkingAndModelUI() {
+        const chat = getActiveChat();
+        const project = getActiveProject();
+
+        if (chat && chat.thinkingLevel !== undefined) {
+            dom.thinkingLevelSelect.value = chat.thinkingLevel;
+            return;
+        }
+        if (project && project.defaultThinking) {
+            dom.thinkingLevelSelect.value = project.defaultThinking;
+            return;
+        }
+        const currentModel = dom.modelSelect.value;
+        dom.thinkingLevelSelect.value = state.modelThinkingDefaults[currentModel] || '';
+    }
+
+    // --- تخمین توکن و هشدار پر شدن کانتکست ---
+    function estimateTokensFromText(text) {
+        if (!text) return 0;
+        // تخمین محافظه‌کارانه برای ترکیب کد انگلیسی و متن فارسی (~۳.۲ کاراکتر به ازای هر توکن)
+        return Math.ceil(text.length / 3.2);
+    }
+
+    function updateTokenEstimate() {
+        const project = getActiveProject();
+        const chat = getActiveChat();
+
+        let totalChars = 0;
+        if (project) {
+            totalChars += (project.instructions || '').length;
+            for (const f of project.files || []) {
+                totalChars += (f.name || '').length + (f.content || '').length + 30;
+            }
+        }
+        if (chat && Array.isArray(chat.messages)) {
+            for (const m of chat.messages) {
+                totalChars += (m.text || '').length;
+                for (const f of m.files || []) {
+                    totalChars += (f.name || '').length + (f.content || '').length + 30;
+                }
+            }
+        }
+        totalChars += (dom.promptInput.value || '').length;
+        for (const f of state.attachedFiles) {
+            totalChars += (f.name || '').length + (f.content || '').length + 30;
+        }
+
+        const estimated = Math.ceil(totalChars / 3.2);
+        const currentModelObj = state.models.find(m => m.id === dom.modelSelect.value);
+        const limit = currentModelObj?.inputTokenLimit || 1048576;
+        const ratio = limit > 0 ? (estimated / limit) : 0;
+
+        dom.tokenCountText.textContent = `~${estimated.toLocaleString('en-US')}`;
+
+        if (ratio >= 0.85) {
+            dom.tokenBadge.className = 'badge text-bg-danger';
+            dom.contextWarningBanner.classList.remove('d-none');
+            dom.contextWarningBanner.className = 'alert alert-danger rounded-0 m-0 py-1 px-3 small d-flex justify-content-between align-items-center';
+            dom.contextWarningText.textContent = `هشدار بحرانی کانتکست: حدود ${Math.round(ratio * 100)}% از ظرفیت ورودی مدل (${limit.toLocaleString('en-US')} توکن) پر شده است. پیشنهاد می‌شود گفتگوی جدید باز کنید یا فایل‌های اضافی را حذف نمایید.`;
+        } else if (ratio >= 0.65) {
+            dom.tokenBadge.className = 'badge text-bg-warning text-dark';
+            dom.contextWarningBanner.classList.remove('d-none');
+            dom.contextWarningBanner.className = 'alert alert-warning rounded-0 m-0 py-1 px-3 small d-flex justify-content-between align-items-center';
+            dom.contextWarningText.textContent = `توجه: بیش از ${Math.round(ratio * 100)}% از ظرفیت کانتکست پر شده است (~${estimated.toLocaleString('en-US')} از ${limit.toLocaleString('en-US')} توکن).`;
+        } else {
+            dom.tokenBadge.className = 'badge text-bg-light border text-dark';
+            dom.contextWarningBanner.classList.add('d-none');
+        }
     }
 
     function updateContextBadge() {
@@ -242,6 +515,7 @@
         }
     }
 
+    // --- سایدبار ---
     function renderSidebar() {
         dom.sidebarContent.innerHTML = '';
 
@@ -262,7 +536,18 @@
         header.className = 'd-flex justify-content-between align-items-center px-2 py-1 small text-secondary fw-bold';
 
         const titleSpan = document.createElement('span');
+        titleSpan.style.cursor = 'pointer';
         titleSpan.textContent = title;
+        titleSpan.onclick = () => {
+            state.activeProjectId = projectId;
+            state.activeChatId = chats[0]?.id || null;
+            if (projectObj) applyProjectProfileToUI(projectObj);
+            syncThinkingAndModelUI();
+            renderSidebar();
+            renderMessages();
+            updateContextBadge();
+            updateTokenEstimate();
+        };
         header.appendChild(titleSpan);
 
         if (projectObj) {
@@ -272,7 +557,7 @@
             const editBtn = document.createElement('button');
             editBtn.type = 'button';
             editBtn.className = 'btn btn-link btn-sm text-info p-0';
-            editBtn.title = 'ویرایش پروژه و فایل‌ها';
+            editBtn.title = 'ویرایش پروژه، تنظیمات و فایل‌ها';
             editBtn.innerHTML = '<i class="bi bi-pencil-square"></i>';
             editBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -301,6 +586,7 @@
                 renderSidebar();
                 renderMessages();
                 updateContextBadge();
+                updateTokenEstimate();
             };
 
             actions.appendChild(editBtn);
@@ -332,14 +618,18 @@
                 }
                 renderSidebar();
                 renderMessages();
+                updateTokenEstimate();
             };
 
             item.onclick = () => {
                 state.activeProjectId = projectId;
                 state.activeChatId = chat.id;
+                if (projectObj) applyProjectProfileToUI(projectObj);
+                syncThinkingAndModelUI();
                 renderSidebar();
                 renderMessages();
                 updateContextBadge();
+                updateTokenEstimate();
                 dom.sidebar.classList.remove('show');
             };
 
@@ -351,6 +641,7 @@
         dom.sidebarContent.appendChild(box);
     }
 
+    // --- پیام‌ها و قابلیت پین کردن ---
     function renderMessages() {
         dom.chatMessages.innerHTML = '';
         const chat = getActiveChat();
@@ -359,33 +650,61 @@
             dom.chatMessages.innerHTML = `
                 <div class="text-center text-muted mt-5">
                     <i class="bi bi-terminal fs-1 d-block mb-2"></i>
-                    <p>پیام خود را بنویسید یا یک فایل متنی به گفتگو اضافه کنید.</p>
+                    <p>پیام خود را بنویسید، از قالب‌های کدنویسی استفاده کنید یا فایل متنی اضافه نمایید.</p>
                 </div>`;
+            updatePinnedUI();
             return;
         }
 
-        for (const msg of chat.messages) {
-            appendMessageElement(msg.role, msg.text, msg.files || []);
-        }
+        chat.messages.forEach((msg, idx) => {
+            if (!msg.id) msg.id = crypto.randomUUID();
+            appendMessageElement(msg, idx);
+        });
         dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+        updatePinnedUI();
     }
 
-    function appendMessageElement(role, text, files = []) {
+    function appendMessageElement(msg, index) {
+        const role = msg.role;
         const row = document.createElement('div');
         row.className = 'd-flex mb-3 justify-content-start';
+        row.id = `msg-row-${msg.id}`;
 
         const card = document.createElement('div');
-        card.className = `message-card w-100 p-3 ${role === 'user' ? 'message-user' : 'message-assistant'}`;
+        card.className = `message-card w-100 p-3 ${role === 'user' ? 'message-user' : 'message-assistant'} ${msg.pinned ? 'message-pinned' : ''}`;
 
-        const roleBadge = document.createElement('div');
-        roleBadge.className = 'small fw-bold mb-2 text-secondary';
+        const topBar = document.createElement('div');
+        topBar.className = 'd-flex justify-content-between align-items-center mb-2';
+
+        const roleBadge = document.createElement('span');
+        roleBadge.className = 'small fw-bold text-secondary';
         roleBadge.textContent = role === 'user' ? 'شما' : 'Gemini';
-        card.appendChild(roleBadge);
 
-        if (files && files.length > 0) {
+        const actionsBar = document.createElement('div');
+        actionsBar.className = 'd-flex align-items-center gap-1';
+
+        const pinBtn = document.createElement('button');
+        pinBtn.type = 'button';
+        pinBtn.className = `btn btn-sm py-0 px-2 ${msg.pinned ? 'btn-warning text-dark' : 'btn-outline-secondary'}`;
+        pinBtn.title = msg.pinned ? 'برداشتن پین پیام' : 'پین کردن پیام مهم';
+        pinBtn.innerHTML = `<i class="bi ${msg.pinned ? 'bi-pin-angle-fill' : 'bi-pin-angle'}"></i>`;
+        pinBtn.onclick = async () => {
+            const chat = getActiveChat();
+            if (!chat) return;
+            msg.pinned = !msg.pinned;
+            await dbHelper.put('chats', chat);
+            renderMessages();
+        };
+        actionsBar.appendChild(pinBtn);
+
+        topBar.appendChild(roleBadge);
+        topBar.appendChild(actionsBar);
+        card.appendChild(topBar);
+
+        if (msg.files && msg.files.length > 0) {
             const filesBox = document.createElement('div');
             filesBox.className = 'mb-2 d-flex flex-wrap gap-1';
-            for (const f of files) {
+            for (const f of msg.files) {
                 const chip = document.createElement('span');
                 chip.className = 'badge text-bg-dark';
                 chip.innerHTML = `<i class="bi bi-file-text me-1"></i>${escapeHtml(f.name)}`;
@@ -396,20 +715,66 @@
 
         const bodyDiv = document.createElement('div');
         bodyDiv.className = 'msg-body';
+
         if (role === 'user') {
             const p = document.createElement('p');
             p.className = 'm-0';
             p.style.whiteSpace = 'pre-wrap';
-            p.textContent = text;
+            p.textContent = msg.text;
             bodyDiv.appendChild(p);
         } else {
-            bodyDiv.innerHTML = renderMarkdownSafe(text);
+            const rendered = renderMarkdownWithTools(msg.text);
+            bodyDiv.innerHTML = rendered.html;
+            bindCodeBlockButtons(bodyDiv);
+
+            if (rendered.extractedFiles.length > 0) {
+                const zipAllBtn = document.createElement('button');
+                zipAllBtn.type = 'button';
+                zipAllBtn.className = 'btn btn-sm btn-outline-primary py-0 px-2';
+                zipAllBtn.innerHTML = `<i class="bi bi-file-zip-fill me-1"></i>دانلود کل کدها (${rendered.extractedFiles.length} فایل ZIP)`;
+                zipAllBtn.onclick = () => downloadFilesAsZip(rendered.extractedFiles, `gemini-response-${index + 1}.zip`);
+                actionsBar.insertBefore(zipAllBtn, pinBtn);
+            }
         }
 
         card.appendChild(bodyDiv);
         row.appendChild(card);
         dom.chatMessages.appendChild(row);
-        return bodyDiv;
+        return { bodyDiv, actionsBar, pinBtn };
+    }
+
+    function updatePinnedUI() {
+        const chat = getActiveChat();
+        const pinnedMsgs = (chat?.messages || []).filter(m => m.pinned);
+
+        if (pinnedMsgs.length === 0) {
+            dom.togglePinnedDrawerBtn.classList.add('d-none');
+            dom.pinnedMessagesPanel.classList.add('d-none');
+            return;
+        }
+
+        dom.togglePinnedDrawerBtn.classList.remove('d-none');
+        dom.pinnedCountBadge.textContent = String(pinnedMsgs.length);
+        dom.pinnedMessagesList.innerHTML = '';
+
+        for (const pm of pinnedMsgs) {
+            const item = document.createElement('div');
+            item.className = 'bg-white border rounded px-2 py-1 d-flex justify-content-between align-items-center';
+            item.style.cursor = 'pointer';
+
+            const preview = document.createElement('span');
+            preview.className = 'text-truncate';
+            const who = pm.role === 'user' ? 'شما' : 'Gemini';
+            preview.innerHTML = `<strong>${who}:</strong> ${escapeHtml((pm.text || '').slice(0, 110))}`;
+
+            item.onclick = () => {
+                const target = document.getElementById(`msg-row-${pm.id}`);
+                if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            };
+
+            item.appendChild(preview);
+            dom.pinnedMessagesList.appendChild(item);
+        }
     }
 
     function escapeHtml(str) {
@@ -422,6 +787,7 @@
         if (!state.attachedFiles.length) {
             dom.attachedFilesBar.classList.add('d-none');
             dom.attachedFilesBar.innerHTML = '';
+            updateTokenEstimate();
             return;
         }
         dom.attachedFilesBar.classList.remove('d-none');
@@ -444,24 +810,58 @@
             pill.appendChild(removeBtn);
             dom.attachedFilesBar.appendChild(pill);
         }
+        updateTokenEstimate();
     }
 
+    // --- مودال پروژه و ویرایش محتوای فایل‌های پروژه ---
     function openProjectModal(project = null) {
+        state.editingProjectFileId = null;
+        dom.projectFileEditorPane.classList.add('d-none');
+        dom.projectFileEditorPane.classList.remove('d-flex');
+        dom.projectFileEditorPlaceholder.classList.remove('d-none');
+
         if (project) {
-            dom.projectModalTitle.textContent = 'ویرایش پروژه';
+            dom.projectModalTitle.textContent = 'ویرایش پروژه و تنظیمات';
             dom.projectIdInput.value = project.id;
             dom.projectNameInput.value = project.name;
+            dom.projectDefaultModelSelect.value = project.defaultModel || '';
+            dom.projectDefaultThinkingSelect.value = project.defaultThinking || '';
+            dom.projectDefaultTempInput.value = project.defaultTemp ?? '';
             dom.projectInstructionsInput.value = project.instructions || '';
             state.draftProjectFiles = structuredClone(project.files || []);
         } else {
             dom.projectModalTitle.textContent = 'پروژه جدید';
             dom.projectIdInput.value = '';
             dom.projectNameInput.value = '';
+            dom.projectDefaultModelSelect.value = '';
+            dom.projectDefaultThinkingSelect.value = '';
+            dom.projectDefaultTempInput.value = '';
             dom.projectInstructionsInput.value = '';
             state.draftProjectFiles = [];
         }
         renderDraftProjectFiles();
         projectModal.show();
+    }
+
+    function openProjectFileInEditor(fileObj) {
+        state.editingProjectFileId = fileObj.id;
+        dom.editingProjectFileName.value = fileObj.name;
+        dom.editingProjectFileContent.value = fileObj.content;
+        dom.projectFileEditorPlaceholder.classList.add('d-none');
+        dom.projectFileEditorPane.classList.remove('d-none');
+        dom.projectFileEditorPane.classList.add('d-flex');
+        renderDraftProjectFiles();
+    }
+
+    function commitCurrentFileEditorChanges() {
+        if (!state.editingProjectFileId) return;
+        const target = state.draftProjectFiles.find(f => f.id === state.editingProjectFileId);
+        if (!target) return;
+        const newName = dom.editingProjectFileName.value.trim();
+        if (newName) target.name = newName;
+        target.content = dom.editingProjectFileContent.value;
+        target.size = new Blob([target.content]).size;
+        renderDraftProjectFiles();
     }
 
     function renderDraftProjectFiles() {
@@ -472,29 +872,48 @@
         dom.projectFilesList.innerHTML = '';
         for (const f of state.draftProjectFiles) {
             const row = document.createElement('div');
-            row.className = 'd-flex justify-content-between align-items-center py-1 border-bottom';
-            row.innerHTML = `<span><i class="bi bi-file-code me-1"></i><strong>${escapeHtml(f.name)}</strong> (${Math.max(1, Math.round(f.size / 1024))} KB)</span>`;
+            row.className = `project-file-row d-flex justify-content-between align-items-center p-1 rounded border-bottom ${f.id === state.editingProjectFileId ? 'active' : ''}`;
+            row.style.cursor = 'pointer';
+
+            const info = document.createElement('span');
+            info.className = 'text-truncate';
+            info.innerHTML = `<i class="bi bi-file-code me-1"></i>${escapeHtml(f.name)} <small class="text-muted">(${Math.max(1, Math.round((f.size || 0) / 1024))} KB)</small>`;
+            info.onclick = () => {
+                commitCurrentFileEditorChanges();
+                openProjectFileInEditor(f);
+            };
 
             const delBtn = document.createElement('button');
             delBtn.type = 'button';
-            delBtn.className = 'btn btn-sm btn-outline-danger py-0 px-1';
+            delBtn.className = 'btn btn-sm btn-outline-danger py-0 px-1 ms-1';
             delBtn.innerHTML = '<i class="bi bi-trash"></i>';
-            delBtn.onclick = () => {
+            delBtn.onclick = (e) => {
+                e.stopPropagation();
                 state.draftProjectFiles = state.draftProjectFiles.filter(x => x.id !== f.id);
+                if (state.editingProjectFileId === f.id) {
+                    state.editingProjectFileId = null;
+                    dom.projectFileEditorPane.classList.add('d-none');
+                    dom.projectFileEditorPane.classList.remove('d-flex');
+                    dom.projectFileEditorPlaceholder.classList.remove('d-none');
+                }
                 renderDraftProjectFiles();
             };
+
+            row.appendChild(info);
             row.appendChild(delBtn);
             dom.projectFilesList.appendChild(row);
         }
     }
 
+    // --- ساخت چت و ارسال پیام با پشتیبانی از Stop Generating ---
     async function ensureActiveChat(firstPromptText) {
         let chat = getActiveChat();
         if (!chat) {
             chat = {
                 id: crypto.randomUUID(),
                 projectId: state.activeProjectId,
-                title: firstPromptText.slice(0, 40) || 'گفتگوی جدید',
+                title: firstPromptText.slice(0, 42) || 'گفتگوی جدید',
+                thinkingLevel: dom.thinkingLevelSelect.value,
                 messages: [],
                 createdAt: Date.now()
             };
@@ -534,6 +953,18 @@
         });
     }
 
+    function setStreamingState(active) {
+        state.isStreaming = active;
+        if (active) {
+            dom.sendBtn.classList.add('d-none');
+            dom.stopBtn.classList.remove('d-none');
+        } else {
+            dom.stopBtn.classList.add('d-none');
+            dom.sendBtn.classList.remove('d-none');
+            state.abortController = null;
+        }
+    }
+
     async function handleSendMessage(e) {
         e.preventDefault();
         if (state.isStreaming) return;
@@ -558,27 +989,45 @@
         dom.promptInput.value = '';
 
         const chat = await ensureActiveChat(promptText || filesSnapshot[0]?.name || 'گفتگو');
-        const userMsg = { role: 'user', text: promptText, files: filesSnapshot };
+        chat.thinkingLevel = dom.thinkingLevelSelect.value;
+
+        const userMsg = {
+            id: crypto.randomUUID(),
+            role: 'user',
+            text: promptText,
+            files: filesSnapshot,
+            pinned: false
+        };
         chat.messages.push(userMsg);
         await dbHelper.put('chats', chat);
 
         if (dom.chatMessages.querySelector('.text-center.text-muted')) {
             dom.chatMessages.innerHTML = '';
         }
-        appendMessageElement('user', userMsg.text, userMsg.files);
+        appendMessageElement(userMsg, chat.messages.length - 1);
+        updateTokenEstimate();
 
-        const assistantBodyEl = appendMessageElement('assistant', 'در حال دریافت پاسخ...');
+        const assistantMsg = {
+            id: crypto.randomUUID(),
+            role: 'model',
+            text: 'در حال دریافت پاسخ...',
+            files: [],
+            pinned: false
+        };
+        const { bodyDiv, actionsBar, pinBtn } = appendMessageElement(assistantMsg, chat.messages.length);
         dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
 
-        state.isStreaming = true;
-        dom.sendBtn.disabled = true;
+        state.abortController = new AbortController();
+        setStreamingState(true);
 
         let fullReply = '';
+        let wasAborted = false;
 
         try {
             const activeProject = getActiveProject();
             const res = await fetch('/api/chat.php', {
                 method: 'POST',
+                signal: state.abortController.signal,
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Gemini-Api-Key': state.apiKey
@@ -586,6 +1035,7 @@
                 body: JSON.stringify({
                     model: selectedModel,
                     temperature: parseFloat(dom.tempRange.value),
+                    thinkingLevel: dom.thinkingLevelSelect.value,
                     systemInstruction: buildSystemInstruction(activeProject),
                     contents: buildContentsForApi(chat.messages)
                 })
@@ -625,23 +1075,55 @@
                     }
                     if (eventName === 'chunk' && parsed.text) {
                         fullReply += parsed.text;
-                        assistantBodyEl.innerHTML = renderMarkdownSafe(fullReply);
+                        const rendered = renderMarkdownWithTools(fullReply);
+                        bodyDiv.innerHTML = rendered.html;
+                        bindCodeBlockButtons(bodyDiv);
                         dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+                    }
+                    if (eventName === 'usage' && parsed.totalTokenCount) {
+                        dom.tokenCountText.textContent = Number(parsed.totalTokenCount).toLocaleString('en-US');
                     }
                 }
             }
-
-            chat.messages.push({ role: 'model', text: fullReply, files: [] });
-            await dbHelper.put('chats', chat);
-
         } catch (err) {
-            assistantBodyEl.innerHTML = `<div class="alert alert-danger m-0">${escapeHtml(err.message)}</div>`;
-        } finally {
-            state.isStreaming = false;
-            dom.sendBtn.disabled = false;
+            if (err.name === 'AbortError') {
+                wasAborted = true;
+                if (!fullReply) {
+                    fullReply = '_تولید پاسخ توسط کاربر متوقف شد._';
+                } else {
+                    fullReply += '\n\n_[تولید پاسخ متوقف شد]_';
+                }
+                const rendered = renderMarkdownWithTools(fullReply);
+                bodyDiv.innerHTML = rendered.html;
+                bindCodeBlockButtons(bodyDiv);
+            } else {
+                bodyDiv.innerHTML = `<div class="alert alert-danger m-0">${escapeHtml(err.message)}</div>`;
+                setStreamingState(false);
+                return;
+            }
+        }
+
+        assistantMsg.text = fullReply;
+        chat.messages.push(assistantMsg);
+        await dbHelper.put('chats', chat);
+
+        const finalRendered = renderMarkdownWithTools(fullReply);
+        if (finalRendered.extractedFiles.length > 0 && !actionsBar.querySelector('.btn-outline-primary')) {
+            const zipAllBtn = document.createElement('button');
+            zipAllBtn.type = 'button';
+            zipAllBtn.className = 'btn btn-sm btn-outline-primary py-0 px-2';
+            zipAllBtn.innerHTML = `<i class="bi bi-file-zip-fill me-1"></i>دانلود کل کدها (${finalRendered.extractedFiles.length} فایل ZIP)`;
+            zipAllBtn.onclick = () => downloadFilesAsZip(finalRendered.extractedFiles, `gemini-response-${chat.messages.length}.zip`);
+            actionsBar.insertBefore(zipAllBtn, pinBtn);
+        }
+
+        setStreamingState(false);
+        if (!wasAborted) {
+            updateTokenEstimate();
         }
     }
 
+    // --- رویدادها ---
     dom.toggleSidebarBtn.addEventListener('click', () => {
         dom.sidebar.classList.toggle('show');
     });
@@ -649,6 +1131,81 @@
     dom.tempRange.addEventListener('input', () => {
         dom.tempValue.textContent = dom.tempRange.value;
     });
+
+    dom.modelSelect.addEventListener('change', () => {
+        const chat = getActiveChat();
+        if (!chat || chat.thinkingLevel === undefined) {
+            syncThinkingAndModelUI();
+        }
+        updateTokenEstimate();
+    });
+
+    dom.thinkingLevelSelect.addEventListener('change', async () => {
+        const chat = getActiveChat();
+        if (chat) {
+            chat.thinkingLevel = dom.thinkingLevelSelect.value;
+            await dbHelper.put('chats', chat);
+        }
+    });
+
+    dom.saveModelThinkingBtn.addEventListener('click', () => {
+        const modelId = dom.modelSelect.value;
+        if (!modelId) return;
+        const level = dom.thinkingLevelSelect.value;
+        if (level) {
+            state.modelThinkingDefaults[modelId] = level;
+        } else {
+            delete state.modelThinkingDefaults[modelId];
+        }
+        saveModelThinkingDefaults();
+        const origHtml = dom.saveModelThinkingBtn.innerHTML;
+        dom.saveModelThinkingBtn.innerHTML = '<i class="bi bi-check2 text-success"></i>';
+        setTimeout(() => { dom.saveModelThinkingBtn.innerHTML = origHtml; }, 1200);
+    });
+
+    dom.stopBtn.addEventListener('click', () => {
+        if (state.abortController) {
+            state.abortController.abort();
+        }
+    });
+
+    dom.togglePinnedDrawerBtn.addEventListener('click', () => {
+        dom.pinnedMessagesPanel.classList.toggle('d-none');
+    });
+
+    dom.closePinnedPanelBtn.addEventListener('click', () => {
+        dom.pinnedMessagesPanel.classList.add('d-none');
+    });
+
+    dom.promptSnippetsBar.querySelectorAll('.snippet-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const key = btn.dataset.snippet;
+            if (BUILTIN_SNIPPETS[key]) {
+                insertSnippetIntoPrompt(BUILTIN_SNIPPETS[key]);
+            }
+        });
+    });
+
+    dom.manageSnippetsBtn.addEventListener('click', () => {
+        dom.newSnippetTitle.value = '';
+        dom.newSnippetPrompt.value = '';
+        customSnippetModal.show();
+    });
+
+    dom.saveCustomSnippetBtn.addEventListener('click', () => {
+        const title = dom.newSnippetTitle.value.trim();
+        const prompt = dom.newSnippetPrompt.value.trim();
+        if (!title || !prompt) {
+            alert('عنوان و متن قالب الزامی است.');
+            return;
+        }
+        state.customSnippets.push({ title, prompt });
+        localStorage.setItem(STORAGE_CUSTOM_SNIPPETS, JSON.stringify(state.customSnippets));
+        renderCustomSnippets();
+        customSnippetModal.hide();
+    });
+
+    dom.promptInput.addEventListener('input', updateTokenEstimate);
 
     dom.promptInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -663,8 +1220,15 @@
 
     dom.newChatBtn.addEventListener('click', () => {
         state.activeChatId = null;
+        const proj = getActiveProject();
+        if (proj) {
+            applyProjectProfileToUI(proj);
+        } else {
+            syncThinkingAndModelUI();
+        }
         renderSidebar();
         renderMessages();
+        updateTokenEstimate();
     });
 
     dom.refreshModelsBtn.addEventListener('click', () => {
@@ -694,6 +1258,7 @@
     });
 
     dom.projectFilesInput.addEventListener('change', async (e) => {
+        commitCurrentFileEditorChanges();
         for (const file of e.target.files || []) {
             try {
                 const parsedFile = await readTextFile(file);
@@ -704,9 +1269,32 @@
         }
         e.target.value = '';
         renderDraftProjectFiles();
+        if (state.draftProjectFiles.length > 0 && !state.editingProjectFileId) {
+            openProjectFileInEditor(state.draftProjectFiles[state.draftProjectFiles.length - 1]);
+        }
+    });
+
+    dom.createEmptyProjectFileBtn.addEventListener('click', () => {
+        commitCurrentFileEditorChanges();
+        const newFile = {
+            id: crypto.randomUUID(),
+            name: `file-${state.draftProjectFiles.length + 1}.php`,
+            size: 0,
+            content: '<?php\n'
+        };
+        state.draftProjectFiles.push(newFile);
+        openProjectFileInEditor(newFile);
+    });
+
+    dom.applyProjectFileEditBtn.addEventListener('click', () => {
+        commitCurrentFileEditorChanges();
+        const orig = dom.applyProjectFileEditBtn.textContent;
+        dom.applyProjectFileEditBtn.textContent = 'اعمال شد ✓';
+        setTimeout(() => { dom.applyProjectFileEditBtn.textContent = orig; }, 1000);
     });
 
     dom.saveProjectBtn.addEventListener('click', async () => {
+        commitCurrentFileEditorChanges();
         const name = dom.projectNameInput.value.trim();
         if (!name) {
             alert('نام پروژه الزامی است.');
@@ -716,6 +1304,9 @@
         const projectObj = {
             id: existingId || crypto.randomUUID(),
             name,
+            defaultModel: dom.projectDefaultModelSelect.value,
+            defaultThinking: dom.projectDefaultThinkingSelect.value,
+            defaultTemp: dom.projectDefaultTempInput.value.trim(),
             instructions: dom.projectInstructionsInput.value,
             files: state.draftProjectFiles,
             updatedAt: Date.now()
@@ -730,11 +1321,12 @@
         }
 
         state.activeProjectId = projectObj.id;
-        state.activeChatId = null;
+        applyProjectProfileToUI(projectObj);
         projectModal.hide();
         renderSidebar();
         renderMessages();
         updateContextBadge();
+        updateTokenEstimate();
     });
 
     dom.chatTextFileInput.addEventListener('change', async (e) => {
@@ -753,6 +1345,8 @@
     dom.exportDataBtn.addEventListener('click', () => {
         const payload = {
             exportedAt: new Date().toISOString(),
+            modelThinkingDefaults: state.modelThinkingDefaults,
+            customSnippets: state.customSnippets,
             projects: state.projects,
             chats: state.chats
         };
@@ -777,11 +1371,21 @@
             await dbHelper.clearAndImport(parsed);
             state.projects = parsed.projects;
             state.chats = parsed.chats;
+            if (parsed.modelThinkingDefaults) {
+                state.modelThinkingDefaults = parsed.modelThinkingDefaults;
+                saveModelThinkingDefaults();
+            }
+            if (Array.isArray(parsed.customSnippets)) {
+                state.customSnippets = parsed.customSnippets;
+                localStorage.setItem(STORAGE_CUSTOM_SNIPPETS, JSON.stringify(state.customSnippets));
+                renderCustomSnippets();
+            }
             state.activeProjectId = null;
             state.activeChatId = state.chats[0]?.id || null;
             renderSidebar();
             renderMessages();
             updateContextBadge();
+            updateTokenEstimate();
             alert('اطلاعات با موفقیت بازیابی شد.');
         } catch (err) {
             alert(err.message);
@@ -792,21 +1396,27 @@
 
     async function init() {
         loadSavedApiKey();
+        loadPreferences();
         state.projects = await dbHelper.getAll('projects');
         state.chats = (await dbHelper.getAll('chats')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         if (state.chats.length > 0) {
             state.activeChatId = state.chats[0].id;
             state.activeProjectId = state.chats[0].projectId || null;
         }
-        renderSidebar();
-        renderMessages();
-        updateContextBadge();
 
         if (state.apiKey) {
-            fetchModelsFromServer(false);
+            await fetchModelsFromServer(false);
         } else {
             apiKeyModal.show();
         }
+
+        const activeProj = getActiveProject();
+        if (activeProj) applyProjectProfileToUI(activeProj);
+        syncThinkingAndModelUI();
+        renderSidebar();
+        renderMessages();
+        updateContextBadge();
+        updateTokenEstimate();
     }
 
     init();
