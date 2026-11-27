@@ -33,8 +33,8 @@ if (!isAuthenticated()):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ورود به دستیار کدنویسی Gemini</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.rtl.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="/assets/css/bootstrap.rtl.min.css">
+    <link rel="stylesheet" href="/assets/css/bootstrap-icons.min.css">
 </head>
 <body class="bg-dark d-flex align-items-center justify-content-center vh-100">
     <div class="card shadow-lg border-0" style="width: 100%; max-width: 390px;">
@@ -70,9 +70,9 @@ endif;
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>دستیار کدنویسی Gemini</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.rtl.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+    <link rel="stylesheet" href="/assets/css/bootstrap.rtl.min.css">
+    <link rel="stylesheet" href="/assets/css/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="/assets/css/github-dark.min.css">
     <link rel="stylesheet" href="/assets/css/style.css">
 </head>
 <body class="bg-body-tertiary">
@@ -366,10 +366,10 @@ endif;
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="/assets/js/bootstrap.bundle.min.js"></script>
+<script src="/assets/js/marked.min.js"></script>
+<script src="/assets/js/highlight.min.js"></script>
+<script src="/assets/js/jszip.min.js"></script>
 <script src="/assets/js/db.js"></script>
 <script src="/assets/js/app.js"></script>
 </body>
